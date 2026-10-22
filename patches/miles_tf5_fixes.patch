@@ -1,0 +1,62 @@
+diff --git a/miles/backends/fsdp_utils/actor.py b/miles/backends/fsdp_utils/actor.py
+index 536fdf970..dcc5b24e1 100644
+--- a/miles/backends/fsdp_utils/actor.py
++++ b/miles/backends/fsdp_utils/actor.py
+@@ -93,11 +93,19 @@ class FSDPTrainRayActor(TrainRayActor):
+         init_context = self._get_init_weight_context_manager()
+ 
+         with init_context():
++            # === NLA patch: bf16 storage ===
++            # No torch_dtype → fp32 storage. MixedPrecisionPolicy(param_dtype=bf16)
++            # casts for FORWARD only — storage stays fp32. 2× the sharded params,
++            # 2× the full_state copy below, 2× the HF save. Adam already keeps
++            # fp32 master copies in optimizer state; storing params at fp32 too
++            # is just waste.
+             model = self.get_model_cls().from_pretrained(
+                 self.args.hf_checkpoint,
+                 trust_remote_code=True,
+                 attn_implementation=self.args.attn_implementation,
++                torch_dtype=torch.bfloat16,
+             )
++            # === end NLA patch ===
+ 
+         model.train()
+ 
+@@ -133,6 +141,15 @@ class FSDPTrainRayActor(TrainRayActor):
+ 
+         checkpoint_payload = checkpoint.load(self)
+ 
++        # Constant lr only — checkpoint-loaded scheduler state can carry stale
++        # decay config that drives lr→0 on resume. Neuter scheduler + set live lr.
++        self.lr_scheduler.max_lr = float(args.lr)
++        self.lr_scheduler.min_lr = float(args.lr)
++        for pg in self.optimizer.param_groups:
++            pg["lr"] = float(args.lr)
++            pg.pop("max_lr", None)
++        logger.info(f"[FSDP] reset scheduler + optimizer lr = {args.lr} (constant)")
++
+         # Create separate ref model if needed (kept in CPU until needed)
+         self.ref_model = None
+         if with_ref:
+@@ -596,6 +613,12 @@ class FSDPTrainRayActor(TrainRayActor):
+                     ref_load_path,
+                     trust_remote_code=True,
+                     attn_implementation=self.args.attn_implementation,
++                    # === NLA patch: bf16 ref ===
++                    # Without this, fp32-saved DCP→HF checkpoints (what
++                    # convert_fsdp_to_hf produces, since DCP itself is fp32)
++                    # load at fp32 → 2× VRAM with --nla-ref-on-gpu. CPUOffload
++                    # doesn't care, but keeping ref on GPU at 27b does.
++                    torch_dtype=torch.bfloat16,
+                 )
+ 
+             full_state = ref_model.state_dict()
+@@ -670,7 +693,7 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
+     offload_policy = CPUOffloadPolicy() if cpu_offload else None
+ 
+     layer_cls_to_wrap = model._no_split_modules
+-    assert len(layer_cls_to_wrap) > 0 and layer_cls_to_wrap[0] is not None
++    assert len(layer_cls_to_wrap) > 0 and next(iter(layer_cls_to_wrap)) is not None
+ 
+     modules = [
+         module

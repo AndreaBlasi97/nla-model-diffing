@@ -1,0 +1,70 @@
+diff --git a/configs/rl.sh b/configs/rl.sh
+index 8f903e7..4a564a1 100755
+--- a/configs/rl.sh
++++ b/configs/rl.sh
+@@ -120,9 +120,11 @@ ${PYTHON:-python} train.py \
+     --router-policy round_robin \
+     --router-disable-circuit-breaker \
+     --router-retry-max-backoff-ms 500 --router-retry-max-retries 2 \
+-    --rollout-batch-size 128 \
+-    --global-batch-size 1024 \
++    --rollout-batch-size 16 \
++    --global-batch-size 128 \
+     --micro-batch-size "${ACTOR_MICRO:-4}" \
++    --sglang-disable-piecewise-cuda-graph \
++    --sglang-mem-fraction-static 0.7 \
+     --lr "${ACTOR_LR:-1.41e-5}" --lr-decay-style constant \
+     "${KL_FLAGS[@]}" \
+     --save-interval "${SAVE_INTERVAL:-100}" \
+diff --git a/nla/datagen/injection_token_cache.yaml b/nla/datagen/injection_token_cache.yaml
+index 1a334ce..5486034 100644
+--- a/nla/datagen/injection_token_cache.yaml
++++ b/nla/datagen/injection_token_cache.yaml
+@@ -1,10 +1,6 @@
+-# Maps tokenizer name_or_path → {char, token_id}.
+-# Written automatically by injection_tokens.find_injection_token().
+-# Committed so everyone on the same git commit gets identical token IDs —
+-# token-ID drift across runs is silent and catastrophic (wrong injection pos
+-# → model sees literal CJK → outputs Chinese).
+-#
+-# Hand-edit only if you have a specific reason to pin a different char.
+ meta-llama/Llama-3.3-70B-Instruct:
+-  char: "㎡"
++  char: ㎡
+   token_id: 105565
++unsloth/Qwen2.5-7B-Instruct:
++  char: ㈎
++  token_id: 149705
+diff --git a/nla/datagen/stage3_build.py b/nla/datagen/stage3_build.py
+index 74a4221..a233fda 100644
+--- a/nla/datagen/stage3_build.py
++++ b/nla/datagen/stage3_build.py
+@@ -53,7 +53,7 @@ _INJECT_PLACEHOLDER = "<INJECT>"
+ # <concept>...</concept> wrapping tight.
+ _DEFAULT_ACTOR_TEMPLATE = """You are a meticulous AI researcher conducting an important investigation into activation vectors from a language model. Your overall task is to describe the semantic content of that activation vector.
+ 
+-We will pass the vector enclosed in <concept> tags into your context. You must then produce an explanation for the vector, enclosed within <explanation> tags. The explanation consists of 2-3 text snippets describing that vector.
++We will pass the vector enclosed in <concept> tags into your context. You must then produce an explanation for the vector, enclosed within <explanation> tags. 
+ 
+ Here is the vector:
+ 
+diff --git a/nla/schema.py b/nla/schema.py
+index 1ac13ae..e827b1e 100644
+--- a/nla/schema.py
++++ b/nla/schema.py
+@@ -222,6 +222,15 @@ def compute_canonical_neighbors(
+         tokenize=True,
+         add_generation_prompt=True,
+     )
++    # transformers 5.x returns BatchEncoding here; 4.x returned list[int].
++    if hasattr(ids, "input_ids"):
++        ids = ids.input_ids
++    elif isinstance(ids, dict):
++        ids = ids["input_ids"]
++    if hasattr(ids, "tolist"):
++        ids = ids.tolist()
++    if ids and isinstance(ids[0], list):
++        ids = ids[0]
+     matches = [i for i, tid in enumerate(ids) if tid == injection_token_id]
+     assert len(matches) == 1, (
+         f"injection token id {injection_token_id} ({injection_char!r}) appears "

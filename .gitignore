@@ -1,0 +1,22 @@
+# model checkpoints, data and outputs are not part of the repo
+*_hf/
+runs/
+results/
+diff_*/
+natural_language_autoencoders/
+microtools/
+miles_build*/
+.triton_cache/
+wandb/
+*.parquet
+*.nla_meta.yaml
+*.pdf
+*.png
+*.xlsx
+*.csv
+*.log
+nohup.out
+__pycache__/
+*.pyc
+.vscode/
+miles/
